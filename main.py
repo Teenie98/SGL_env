@@ -11,10 +11,10 @@ from tqdm import tqdm
 from LightGCN import LightGCN
 from dataset import RecDataset_train, RecDataset_test
 from utils import sp_mat_to_tensor, inner_product, compute_infoNCE_loss, compute_bpr_loss, compute_reg_loss, \
-    compute_metric
+    compute_metric, env_compute_bpr_loss
 
 
-class Model:
+class SGL:
 
     def __init__(self):
         self.train_data_path = args.train_data_path
@@ -39,8 +39,10 @@ class Model:
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
         # Load data
-        train_data = pd.read_csv(self.train_data_path, sep=',', header=None, names=['user', 'item'])
-        test_data = pd.read_csv(self.test_data_path, sep=',', header=None, names=['user', 'item'])
+        # train_data = pd.read_csv(self.train_data_path, sep=',', header=None, names=['user', 'item'])
+        # test_data = pd.read_csv(self.test_data_path, sep=',', header=None, names=['user', 'item'])
+        train_data = pd.read_csv(self.train_data_path, sep=',', header=[0])
+        test_data = pd.read_csv(self.test_data_path, sep=',', header=[0])
         all_data = pd.concat([train_data, test_data])
         self.user_num = max(all_data['user']) + 1
         self.item_num = max(all_data['item']) + 1
@@ -66,15 +68,15 @@ class Model:
         for epoch in range(1, args.epoch_num + 1):
             self.epoch += 1
 
-            epoch_loss, bpr_loss, infoNCE_loss, reg_loss= self.train_epoch()
+            epoch_loss, bpr_loss, infoNCE_loss, reg_loss = self.train_epoch()
             self.train_loss.append(epoch_loss)
             self.bpr_loss.append(bpr_loss)
             self.infoNCE_loss.append(infoNCE_loss)
             self.reg_loss.append(reg_loss)
-            print(f"Epoch {self.epoch}:  loss:{epoch_loss/self.train_dataset.interact_num} \
-                    bpr_loss:{bpr_loss/self.train_dataset.interact_num} \
-                    info_NCE_loss:{infoNCE_loss/self.train_dataset.interact_num} \
-                    reg_loss:{reg_loss/self.train_dataset.interact_num}")
+            print(f"Epoch {self.epoch}:  loss:{epoch_loss / self.train_dataset.interact_num} \
+                    bpr_loss:{bpr_loss / self.train_dataset.interact_num} \
+                    info_NCE_loss:{infoNCE_loss / self.train_dataset.interact_num} \
+                    reg_loss:{reg_loss / self.train_dataset.interact_num}")
 
             epoch_recall, epoch_NDCG = self.test_epoch()
             self.recall_history.append(epoch_recall)
@@ -97,7 +99,8 @@ class Model:
             self.save_metrics()
 
             if self.cnt == args.stop_cnt:
-                print(f"Early stop at {self.best_epoch}: best Recall: {self.best_recall}, best_NDCG: {self.best_NDCG}\n")
+                print(
+                    f"Early stop at {self.best_epoch}: best Recall: {self.best_recall}, best_NDCG: {self.best_NDCG}\n")
                 self.save_metrics()
                 break
 
@@ -111,10 +114,11 @@ class Model:
         sub_graph2 = self.create_adj_mat(is_subgraph=True)
         sub_graph2 = sp_mat_to_tensor(sub_graph2).to(self.device)
 
-        for batch_user, batch_pos_item, batch_neg_item in tqdm(self.train_loader):
+        for batch_user, batch_pos_item, batch_neg_item, batch_env_weight in tqdm(self.train_loader):
             batch_user = batch_user.long().to(self.device)
             batch_pos_item = batch_pos_item.long().to(self.device)
             batch_neg_item = batch_neg_item.long().to(self.device)
+            batch_env_weight = batch_env_weight.float().to(self.device)
 
             all_user_embedding, all_item_embedding = self.model(self.graph)
             SSL_user_embedding1, SSL_item_embedding1 = self.model(sub_graph1)
@@ -145,24 +149,30 @@ class Model:
             SSL_item_pos_score = inner_product(batch_SSL_item_embedding1, batch_SSL_item_embedding2)
             SSL_item_neg_score = torch.matmul(batch_SSL_item_embedding1, torch.transpose(SSL_item_embedding2, 0, 1))
 
-            bpr_loss = compute_bpr_loss(pos_score, neg_score)  # 1419
+            # bpr_loss = compute_bpr_loss(pos_score, neg_score)  # 1419
+            # env add
+            bpr_loss = env_compute_bpr_loss(pos_score, neg_score, batch_env_weight)
 
             infoNCE_user_loss = compute_infoNCE_loss(SSL_user_pos_score, SSL_user_neg_score, args.SSL_temp)
             infoNCE_item_loss = compute_infoNCE_loss(SSL_item_pos_score, SSL_item_neg_score, args.SSL_temp)
-            infoNCE_loss = torch.sum(infoNCE_user_loss + infoNCE_item_loss, dim=-1)  # 22375
+            # infoNCE_loss = torch.sum(infoNCE_user_loss + infoNCE_item_loss, dim=-1)  # 22375
+            # env add
+            infoNCE_loss = torch.sum((infoNCE_user_loss + infoNCE_item_loss) * batch_env_weight, dim=-1)
 
             reg_loss = compute_reg_loss(  # 11
                 self.model.user_embedding(batch_user),
                 self.model.item_embedding(batch_pos_item),
                 self.model.item_embedding(batch_neg_item)
             )
+            
 
             loss = bpr_loss + infoNCE_loss * args.SSL_reg + reg_loss * args.reg  # 3657
+            # loss = loss * batch_env_weight
             epoch_loss += loss
             epoch_bpr_loss += bpr_loss
             epoch_infoNCE_loss += infoNCE_loss * args.SSL_reg
             epoch_reg_loss += reg_loss * args.reg
-            
+
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -188,7 +198,7 @@ class Model:
 
             # 消除训练集数据的影响
             for idx, user in enumerate(test_user):
-                #if user in train_user_pos_dict and len(train_user_pos_dict[user]) > 0:
+                # if user in train_user_pos_dict and len(train_user_pos_dict[user]) > 0:
                 train_items = train_user_pos_dict[int(user.cpu())]
                 ratings[idx][train_items] = -np.inf
 
@@ -209,7 +219,7 @@ class Model:
         user_np, item_np = self.train_dataset.user_index, self.train_dataset.item_index
 
         if is_subgraph:
-            sample_size = int(user_np.shape[0]*(1-args.SSL_dropout_ratio))
+            sample_size = int(user_np.shape[0] * (1 - args.SSL_dropout_ratio))
             keep_index = np.arange(user_np.shape[0])
             np.random.shuffle(keep_index)
             keep_index = keep_index[:sample_size]
@@ -222,7 +232,6 @@ class Model:
             item_np = np.array(item_np)[keep_index]
             ratings = np.ones_like(user_np)
             tmp_adj = sp.csr_matrix((ratings, (user_np, item_np + self.user_num)), shape=(node_num, node_num))
-
 
             # keep_idx = np.random.choice(user, size=int(len(user) * (1 - args.SSL_dropout_ratio)), replace=True)
             # keep_idx.tolist()
@@ -262,5 +271,5 @@ class Model:
 
 
 if __name__ == '__main__':
-    model = Model()
+    model = SGL()
     model.run()

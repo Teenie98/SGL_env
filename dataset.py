@@ -15,12 +15,25 @@ class RecDataset_train(data.Dataset):
         self.item_index = self.user_item_pair[:, 1].flatten()
         self.interact_num = len(self.user_item_pair)
 
+        # env add
+        self.env_weight = self.get_weight('item')
+
         self.user_pos_dict = OrderedDict()
         grouped_user = self.data.groupby('user')
         for user, user_data in grouped_user:
             self.user_pos_dict[user] = user_data['item'].to_numpy(dtype=np.int32)
 
         self.user_list, self.pos_item_list, self.neg_item_list = self.sample()
+
+    def get_weight(self, type):
+        env_dic = self.data.groupby(type)['{}_env'.format(type)].mean().to_dict()
+        env_cnt = self.data.groupby('{}_env'.format(type))[type].count().to_numpy()
+        env_cnt = 1 / env_cnt
+        weight = env_cnt / env_cnt.sum()
+        for key in env_dic:
+            env_dic[key] = weight[int(env_dic[key])-1]
+        env_list = self.data[type].map(env_dic).values
+        return env_list
 
     def sample(self):
         """
@@ -56,7 +69,7 @@ class RecDataset_train(data.Dataset):
         return self.interact_num
 
     def __getitem__(self, idx):
-        return self.user_list[idx], self.pos_item_list[idx], self.neg_item_list[idx]
+        return self.user_list[idx], self.pos_item_list[idx], self.neg_item_list[idx], self.env_weight[idx]
 
 
 class RecDataset_test(data.Dataset):

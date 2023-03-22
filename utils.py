@@ -18,6 +18,10 @@ def compute_bpr_loss(x1, x2):
     #return -torch.sum(torch.log((x1.view(-1) - x2.view(-1)).sigmoid() + 1e-8))
     return -torch.sum(F.logsigmoid(x1-x2))
 
+# env add
+def env_compute_bpr_loss(x1, x2, weight):
+    return -torch.sum(F.logsigmoid(x1-x2)*weight)
+
 def compute_infoNCE_loss(x1, x2, temp):
     return torch.logsumexp((x2 - x1[:, None]) / temp, dim=1)
 
