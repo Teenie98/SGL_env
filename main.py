@@ -1,4 +1,5 @@
 import datetime
+import random
 import torch
 import numpy as np
 import pandas as pd
@@ -11,7 +12,19 @@ from tqdm import tqdm
 from LightGCN import LightGCN
 from dataset import RecDataset_train, RecDataset_test
 from utils import sp_mat_to_tensor, inner_product, compute_infoNCE_loss, compute_bpr_loss, compute_reg_loss, \
-    compute_metric, env_compute_bpr_loss
+    compute_metric, env_compute_bpr_loss, env_compute_infoNCE_loss, env_compute_reg_loss, compute_irm_loss, \
+    env_compute_metric
+
+
+def set_random_seed(seed=2021):
+    np.random.seed(seed)
+    random.seed(seed)
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
 
 
 class SGL:
@@ -31,8 +44,11 @@ class SGL:
         self.bpr_loss = []
         self.infoNCE_loss = []
         self.reg_loss = []
+        self.irm_loss = []  # add
         self.recall_history = []
         self.NDCG_history = []
+        self.env_recall_history = []  # add
+        self.env_NDCG_history = []  # add
         self.best_recall = 0
         self.best_NDCG = 0
         self.best_epoch = 0
@@ -46,6 +62,7 @@ class SGL:
         all_data = pd.concat([train_data, test_data])
         self.user_num = max(all_data['user']) + 1
         self.item_num = max(all_data['item']) + 1
+        self.all_item_env_dic = all_data.groupby('item')['item_env'].mean().to_dict()
 
         self.train_dataset = RecDataset_train(train_data, self.user_num, self.item_num)
         self.train_loader = dataloader.DataLoader(self.train_dataset, batch_size=args.batch_size, shuffle=True,
@@ -58,8 +75,9 @@ class SGL:
         # Model Config
         self.embed_dim = args.embed_dim
         self.layer_num = args.layer_num
+        self.eps = args.eps
         self.lr = args.lr
-        self.model = LightGCN(self.user_num, self.item_num, self.embed_dim, self.layer_num).to(self.device)
+        self.model = LightGCN(self.user_num, self.item_num, self.embed_dim, self.layer_num, self.eps).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         self.graph = self.create_adj_mat(is_subgraph=False)
         self.graph = sp_mat_to_tensor(self.graph).to(self.device)
@@ -68,20 +86,30 @@ class SGL:
         for epoch in range(1, args.epoch_num + 1):
             self.epoch += 1
 
-            epoch_loss, bpr_loss, infoNCE_loss, reg_loss = self.train_epoch()
+            epoch_loss, bpr_loss, infoNCE_loss, reg_loss, irm_loss = self.train_epoch()
             self.train_loss.append(epoch_loss)
             self.bpr_loss.append(bpr_loss)
             self.infoNCE_loss.append(infoNCE_loss)
             self.reg_loss.append(reg_loss)
+            self.irm_loss.append(irm_loss)
             print(f"Epoch {self.epoch}:  loss:{epoch_loss / self.train_dataset.interact_num} \
                     bpr_loss:{bpr_loss / self.train_dataset.interact_num} \
                     info_NCE_loss:{infoNCE_loss / self.train_dataset.interact_num} \
-                    reg_loss:{reg_loss / self.train_dataset.interact_num}")
+                    reg_loss:{reg_loss / self.train_dataset.interact_num} \
+                    irm_loss:{irm_loss / self.train_dataset.interact_num}")
 
-            epoch_recall, epoch_NDCG = self.test_epoch()
+            epoch_recall, epoch_NDCG, epoch_env_recall, epoch_env_ndcg = self.test_epoch()
             self.recall_history.append(epoch_recall)
             self.NDCG_history.append(epoch_NDCG)
+            self.env_recall_history.append(epoch_env_recall)
+            self.env_NDCG_history.append(epoch_env_ndcg)
+            # self.env_matric_history.append(env_matric)
             print(f"Epoch {self.epoch}:  recall:{epoch_recall}, NDCG:{epoch_NDCG}")
+            print(f"Env1 recall:{epoch_env_recall[0]}, NDCG:{epoch_env_ndcg[0]};\n"
+                  f"Env2 recall:{epoch_env_recall[1]}, NDCG:{epoch_env_ndcg[1]};\n"
+                  f"Env3 recall:{epoch_env_recall[2]}, NDCG:{epoch_env_ndcg[2]};\n"
+                  f"Env4 recall:{epoch_env_recall[3]}, NDCG:{epoch_env_ndcg[3]};\n"
+                  f"Env5 recall:{epoch_env_recall[4]}, NDCG:{epoch_env_ndcg[4]};\n")
 
             if epoch_recall > self.best_recall:
                 self.cnt = 0
@@ -99,8 +127,15 @@ class SGL:
             self.save_metrics()
 
             if self.cnt == args.stop_cnt:
+                # if self.epoch == args.epoch_num:
                 print(
                     f"Early stop at {self.best_epoch}: best Recall: {self.best_recall}, best_NDCG: {self.best_NDCG}\n")
+                print(
+                    f"Env1 recall:{self.env_recall_history[self.best_epoch - 1][0]}, NDCG:{self.env_NDCG_history[self.best_epoch - 1][0]};\n"
+                    f"Env2 recall:{self.env_recall_history[self.best_epoch - 1][1]}, NDCG:{self.env_NDCG_history[self.best_epoch - 1][1]};\n"
+                    f"Env3 recall:{self.env_recall_history[self.best_epoch - 1][2]}, NDCG:{self.env_NDCG_history[self.best_epoch - 1][2]};\n"
+                    f"Env4 recall:{self.env_recall_history[self.best_epoch - 1][3]}, NDCG:{self.env_NDCG_history[self.best_epoch - 1][3]};\n"
+                    f"Env5 recall:{self.env_recall_history[self.best_epoch - 1][4]}, NDCG:{self.env_NDCG_history[self.best_epoch - 1][4]};\n")
                 self.save_metrics()
                 break
 
@@ -109,16 +144,18 @@ class SGL:
         epoch_bpr_loss = 0
         epoch_infoNCE_loss = 0
         epoch_reg_loss = 0
+        epoch_irm_loss = 0  # irm loss add
         sub_graph1 = self.create_adj_mat(is_subgraph=True)
         sub_graph1 = sp_mat_to_tensor(sub_graph1).to(self.device)
         sub_graph2 = self.create_adj_mat(is_subgraph=True)
         sub_graph2 = sp_mat_to_tensor(sub_graph2).to(self.device)
 
-        for batch_user, batch_pos_item, batch_neg_item, batch_env_weight in tqdm(self.train_loader):
+        for batch_user, batch_pos_item, batch_neg_item, batch_env_weight, batch_env in tqdm(self.train_loader):
             batch_user = batch_user.long().to(self.device)
             batch_pos_item = batch_pos_item.long().to(self.device)
             batch_neg_item = batch_neg_item.long().to(self.device)
             batch_env_weight = batch_env_weight.float().to(self.device)
+            batch_env = batch_env.long().to(self.device)
 
             all_user_embedding, all_item_embedding = self.model(self.graph)
             SSL_user_embedding1, SSL_item_embedding1 = self.model(sub_graph1)
@@ -149,48 +186,68 @@ class SGL:
             SSL_item_pos_score = inner_product(batch_SSL_item_embedding1, batch_SSL_item_embedding2)
             SSL_item_neg_score = torch.matmul(batch_SSL_item_embedding1, torch.transpose(SSL_item_embedding2, 0, 1))
 
-            # bpr_loss = compute_bpr_loss(pos_score, neg_score)  # 1419
             # env add
-            bpr_loss = env_compute_bpr_loss(pos_score, neg_score, batch_env_weight)
+            if args.env_mode > 0:
+                bpr_loss = env_compute_bpr_loss(pos_score, neg_score, batch_env_weight)
+                infoNCE_user_loss = env_compute_infoNCE_loss(SSL_user_pos_score, SSL_user_neg_score, args.SSL_temp,
+                                                             batch_env_weight)
+                infoNCE_item_loss = env_compute_infoNCE_loss(SSL_item_pos_score, SSL_item_neg_score, args.SSL_temp,
+                                                             batch_env_weight)
+                infoNCE_loss = torch.sum(infoNCE_user_loss + infoNCE_item_loss, dim=-1)  # 22375
+                reg_loss = env_compute_reg_loss(  # 11
+                    self.model.user_embedding(batch_user),
+                    self.model.item_embedding(batch_pos_item),
+                    self.model.item_embedding(batch_neg_item),
+                    batch_env_weight
+                )
+            else:
+                bpr_loss = compute_bpr_loss(pos_score, neg_score)  # 1419
+                infoNCE_user_loss = compute_infoNCE_loss(SSL_user_pos_score, SSL_user_neg_score, args.SSL_temp)
+                infoNCE_item_loss = compute_infoNCE_loss(SSL_item_pos_score, SSL_item_neg_score, args.SSL_temp)
+                infoNCE_loss = torch.sum(infoNCE_user_loss + infoNCE_item_loss, dim=-1)  # 22375
+                reg_loss = compute_reg_loss(  # 11
+                    self.model.user_embedding(batch_user),
+                    self.model.item_embedding(batch_pos_item),
+                    self.model.item_embedding(batch_neg_item)
+                )
 
-            infoNCE_user_loss = compute_infoNCE_loss(SSL_user_pos_score, SSL_user_neg_score, args.SSL_temp)
-            infoNCE_item_loss = compute_infoNCE_loss(SSL_item_pos_score, SSL_item_neg_score, args.SSL_temp)
-            # infoNCE_loss = torch.sum(infoNCE_user_loss + infoNCE_item_loss, dim=-1)  # 22375
-            # env add
-            infoNCE_loss = torch.sum((infoNCE_user_loss + infoNCE_item_loss) * batch_env_weight, dim=-1)
-
-            reg_loss = compute_reg_loss(  # 11
-                self.model.user_embedding(batch_user),
-                self.model.item_embedding(batch_pos_item),
-                self.model.item_embedding(batch_neg_item)
-            )
-            
+            irm_loss = compute_irm_loss(pos_score, batch_env)
 
             loss = bpr_loss + infoNCE_loss * args.SSL_reg + reg_loss * args.reg  # 3657
-            # loss = loss * batch_env_weight
+            loss = loss + irm_loss * args.irm_reg
+
             epoch_loss += loss
             epoch_bpr_loss += bpr_loss
             epoch_infoNCE_loss += infoNCE_loss * args.SSL_reg
             epoch_reg_loss += reg_loss * args.reg
+            epoch_irm_loss += irm_loss * args.irm_reg
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
-        return epoch_loss, epoch_bpr_loss, epoch_infoNCE_loss, epoch_reg_loss
+        return epoch_loss, epoch_bpr_loss, epoch_infoNCE_loss, epoch_reg_loss, epoch_irm_loss
 
     def test_epoch(self):
         test_user_pos_dict = self.test_dataset.user_pos_dict
         train_user_pos_dict = self.train_dataset.user_pos_dict
+        all_item_env = {k:int(v-1) for k, v in self.all_item_env_dic.items()}
 
+        num_envs = 5
         epoch_recall = 0
         epoch_NDCG = 0
         tot = 0
+        # env add
+        epoch_env_hit = torch.zeros(num_envs)
+        epoch_env_ndcg = [[] for i in range(num_envs)]
+        env_tot = torch.zeros(num_envs)
 
         for test_user in self.test_loader:
             user_num = test_user.size()[0]
             test_user = test_user.long().to(self.device)
             test_item = [torch.from_numpy(test_user_pos_dict[int(u)]).long().to(self.device) for u in test_user]
+            replace_func = lambda tensor: [int(all_item_env[val.item()]) - 1 for val in tensor]
+            env_lst = list(map(replace_func, test_item))
 
             all_user_embedding, all_item_embedding = self.model(self.graph)
             test_user_embedding = all_user_embedding[test_user]
@@ -207,12 +264,21 @@ class SGL:
                 epoch_recall += recall
                 epoch_NDCG += NDCG
 
+                env_hit, env_NDCG, env_num = env_compute_metric(ratings[i], test_item[i], all_item_env)
+                epoch_env_hit += env_hit
+                for a, b in enumerate(env_NDCG):
+                    if b.item() !=0:
+                        epoch_env_ndcg[a].append(b.item())
+                env_tot += env_num
+
             tot += user_num
 
         epoch_recall /= tot
         epoch_NDCG /= tot
+        epoch_env_recall = epoch_env_hit / env_tot
+        epoch_env_ndcg = [sum(l)/len(l) for l in epoch_env_ndcg]
 
-        return epoch_recall, epoch_NDCG
+        return epoch_recall, epoch_NDCG, epoch_env_recall.numpy(), epoch_env_ndcg  # env_matric
 
     def create_adj_mat(self, is_subgraph):
         node_num = self.user_num + self.item_num
@@ -271,5 +337,6 @@ class SGL:
 
 
 if __name__ == '__main__':
+    set_random_seed(args.seed)
     model = SGL()
     model.run()

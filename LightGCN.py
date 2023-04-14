@@ -1,16 +1,18 @@
 import torch
 import torch.nn as nn
 from params import args
+import torch.nn.functional as F
 
 
 class LightGCN(nn.Module):
-    def __init__(self, user_num, item_num, embed_dim, layer_num):
+    def __init__(self, user_num, item_num, embed_dim, layer_num, eps):
         super(LightGCN, self).__init__()
         self.user_num = user_num
         self.item_num = item_num
         self.embed_dim = embed_dim
         self.layer_num = layer_num
         self.dropout = nn.Dropout(p=0.1)
+        self.eps = eps  # add
 
         self.user_embedding = nn.Embedding(self.user_num, self.embed_dim)
         self.item_embedding = nn.Embedding(self.item_num, self.embed_dim)
@@ -28,6 +30,10 @@ class LightGCN(nn.Module):
 
         for i in range(self.layer_num):
             ego_embedding = torch.sparse.mm(norm_adj, ego_embedding)
+            # add
+            random_noise = torch.rand_like(ego_embedding, device=ego_embedding.device)
+            ego_embedding = ego_embedding - torch.sign(ego_embedding) * F.normalize(random_noise, dim=-1) * self.eps
+            # add end
             all_embedding += [ego_embedding]
 
         all_embedding = torch.stack(all_embedding, dim=1).mean(dim=1)

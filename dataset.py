@@ -15,9 +15,6 @@ class RecDataset_train(data.Dataset):
         self.item_index = self.user_item_pair[:, 1].flatten()
         self.interact_num = len(self.user_item_pair)
 
-        # env add
-        self.env_weight = self.get_weight('item')
-
         self.user_pos_dict = OrderedDict()
         grouped_user = self.data.groupby('user')
         for user, user_data in grouped_user:
@@ -25,15 +22,18 @@ class RecDataset_train(data.Dataset):
 
         self.user_list, self.pos_item_list, self.neg_item_list = self.sample()
 
-    def get_weight(self, type):
-        env_dic = self.data.groupby(type)['{}_env'.format(type)].mean().to_dict()
-        env_cnt = self.data.groupby('{}_env'.format(type))[type].count().to_numpy()
-        env_cnt = 1 / env_cnt
-        weight = env_cnt / env_cnt.sum()
+        # env add
+        self.env_list, self.weight_list = self.get_weight(self.pos_item_list)
+
+    def get_weight(self, item_list):
+        env_dic = self.data.groupby('item')['item_env'].mean().to_dict()
+        env_cnt = self.data.groupby('item_env')['item'].count().to_numpy()
+        weight = (1 / env_cnt) / ((1 / env_cnt).sum())
         for key in env_dic:
-            env_dic[key] = weight[int(env_dic[key])-1]
-        env_list = self.data[type].map(env_dic).values
-        return env_list
+            env_dic[key] = weight[int(env_dic[key]) - 1]
+        env_list = [(env_dic[i] - 1) for i in item_list]
+        weight_list = [weight[int(e)] for e in env_list]
+        return env_list, weight_list
 
     def sample(self):
         """
@@ -69,14 +69,15 @@ class RecDataset_train(data.Dataset):
         return self.interact_num
 
     def __getitem__(self, idx):
-        return self.user_list[idx], self.pos_item_list[idx], self.neg_item_list[idx], self.env_weight[idx]
+        return self.user_list[idx], self.pos_item_list[idx], self.neg_item_list[idx], \
+               self.weight_list[idx], self.env_list[idx]
 
 
 class RecDataset_test(data.Dataset):
     def __init__(self, data):
         self.data = data
 
-        self.user_item_pair = self.data.values
+        self.user_item_pair = self.data[["user", 'item']].values
 
         self.user_pos_dict = OrderedDict()
         grouped_user = self.data.groupby('user')
