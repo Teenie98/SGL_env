@@ -98,7 +98,7 @@ class SGL:
                     reg_loss:{reg_loss / self.train_dataset.interact_num} \
                     irm_loss:{irm_loss / self.train_dataset.interact_num}")
 
-            epoch_recall, epoch_NDCG, epoch_env_recall, epoch_env_ndcg = self.test_epoch()
+            epoch_recall, epoch_NDCG, epoch_env_recall, epoch_env_ndcg = self.test_epoch
             self.recall_history.append(epoch_recall)
             self.NDCG_history.append(epoch_NDCG)
             self.env_recall_history.append(epoch_env_recall)
@@ -228,6 +228,7 @@ class SGL:
 
         return epoch_loss, epoch_bpr_loss, epoch_infoNCE_loss, epoch_reg_loss, epoch_irm_loss
 
+    @property
     def test_epoch(self):
         test_user_pos_dict = self.test_dataset.user_pos_dict
         train_user_pos_dict = self.train_dataset.user_pos_dict
@@ -239,8 +240,9 @@ class SGL:
         tot = 0
         # env add
         epoch_env_hit = torch.zeros(num_envs)
-        epoch_env_ndcg = [[] for i in range(num_envs)]
-        env_tot = torch.zeros(num_envs)
+        epoch_env_ndcg = torch.zeros(num_envs)
+        env_item_tot = torch.zeros(num_envs)
+        env_user_tot = torch.zeros(num_envs)
 
         for test_user in self.test_loader:
             user_num = test_user.size()[0]
@@ -264,21 +266,20 @@ class SGL:
                 epoch_recall += recall
                 epoch_NDCG += NDCG
 
-                env_hit, env_NDCG, env_num = env_compute_metric(ratings[i], test_item[i], all_item_env)
+                env_hit, env_NDCG, env_item_num, env_user_num = env_compute_metric(ratings[i], test_item[i], all_item_env)
                 epoch_env_hit += env_hit
-                for a, b in enumerate(env_NDCG):
-                    if b.item() !=0:
-                        epoch_env_ndcg[a].append(b.item())
-                env_tot += env_num
+                epoch_env_ndcg += env_NDCG
+                env_item_tot += env_item_num
+                env_user_tot += env_user_num
 
             tot += user_num
 
         epoch_recall /= tot
         epoch_NDCG /= tot
-        epoch_env_recall = epoch_env_hit / env_tot
-        epoch_env_ndcg = [sum(l)/len(l) for l in epoch_env_ndcg]
+        epoch_env_recall = epoch_env_hit / env_item_tot
+        epoch_env_ndcg = epoch_env_ndcg / env_user_tot
 
-        return epoch_recall, epoch_NDCG, epoch_env_recall.numpy(), epoch_env_ndcg  # env_matric
+        return epoch_recall, epoch_NDCG, epoch_env_recall.numpy(), epoch_env_ndcg.numpy()  # env_matric
 
     def create_adj_mat(self, is_subgraph):
         node_num = self.user_num + self.item_num

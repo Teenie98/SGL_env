@@ -77,23 +77,24 @@ def env_compute_metric(ratings, test_item, all_item_env, num_envs=5):
     env_test_item = [[] for i in range(num_envs)]
     for item in test_item:
         env_test_item[int(all_item_env[item.item()])].append(item.item())
-    env_num = torch.tensor([len(env_test_item[i]) for i in range(num_envs)])
+    env_item_num = torch.tensor([len(env_test_item[i]) for i in range(num_envs)])
+    env_user_num = torch.zeros(num_envs)
 
     for e in range(num_envs):
         shoot = env_shoot_index[e]
         test = env_test_item[e]
-        if len(shoot) == 0 or len(test) == 0:
-            continue
+        if len(test) != 0:
+            env_user_num[e] += 1
 
         for i, s in enumerate(shoot):
             if s in test:
                 hit[e] += 1
                 DCG[e] += 1 / np.log2(i + 2)
-            if i < env_num[e]:
+            if i < env_item_num[e]:
                 iDCG[e] += 1 / np.log2(i + 2)
 
-    NDCG = DCG / iDCG
-    return hit, NDCG, env_num
+    NDCG = torch.where(torch.eq(iDCG, 0), torch.zeros_like(DCG), DCG / iDCG)
+    return hit, NDCG, env_item_num, env_user_num
 
 
 def compute_irm_loss(pos_scores, env_labels, num_envs=5):
