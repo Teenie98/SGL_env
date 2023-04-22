@@ -3,6 +3,8 @@ import argparse
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Model Params')
+    # for cuda
+    parser.add_argument('--cuda', default=-1, type=int, help="Specify CUDA device, defaults to -1 which learns on CPU")
     # for seed
     parser.add_argument('--seed', default=2021, type=int)
 

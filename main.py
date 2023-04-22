@@ -52,7 +52,7 @@ class SGL:
         self.best_recall = 0
         self.best_NDCG = 0
         self.best_epoch = 0
-        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device('cuda:{}'.format(args.cuda) if torch.cuda.is_available() else 'cpu')
 
         # Load data
         # train_data = pd.read_csv(self.train_data_path, sep=',', header=None, names=['user', 'item'])
